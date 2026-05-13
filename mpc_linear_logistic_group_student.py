@@ -455,9 +455,9 @@ def main():
     print(f"Hospital A CSV: {a_path}")
     print(f"Hospital B CSV: {b_path}")
     print("\nHospital A head:")
-    print(hospital_a.head(3).to_string(index=False))
+    print(hospital_a.head(5).to_string(index=False))
     print("\nHospital B head:")
-    print(hospital_b.head(3).to_string(index=False))
+    print(hospital_b.head(5).to_string(index=False))
 
     stats = make_summary_stats_table(hospital_a, hospital_b)
     print("\nSummary stats:")
