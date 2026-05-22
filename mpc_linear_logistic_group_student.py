@@ -146,13 +146,11 @@ def save_generated_datasets(group_ids: Sequence[str], out_dir: Path | str = BASE
 
 def make_design_matrix(df: pd.DataFrame, target_col: str = "risk_score") -> Tuple[np.ndarray, np.ndarray]:
     feature_cols = ["x_age", "x_marker", "x_admissions", "x_treatment"]
-    # TODO 1:
-    # 1. Extract the four feature columns as a float NumPy array.
-    # 2. Create an intercept column of ones.
-    # 3. Concatenate the intercept and feature columns into X.
-    # 4. Extract the target column into y.
-    # 5. Return X, y.
-    raise NotImplementedError("Complete make_design_matrix")
+    features = df[feature_cols].to_numpy(dtype=float)
+    intercept = np.ones((features.shape[0], 1), dtype=float)
+    X = np.hstack([intercept, features])
+    y = df[target_col].to_numpy(dtype=float)
+    return X, y
 
 
 def split_train_test(df_all: pd.DataFrame, train_ratio: float = TRAIN_RATIO, group_ids: Sequence[str] = GROUP_MEMBER_IDS):
@@ -174,27 +172,24 @@ def mse(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> float:
 
 
 def plaintext_gradient(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
-    # TODO 2:
-    # 1. Compute residual = X @ w - y.
-    # 2. Return the mean-squared-error gradient (2/n) * X.T @ residual.
-    raise NotImplementedError("Complete plaintext_gradient")
+    residual = X @ w - y
+    return (2.0 / X.shape[0]) * (X.T @ residual)
 
 
 def plaintext_train(X: np.ndarray, y: np.ndarray, learning_rate: float = LEARNING_RATE, steps: int = LINEAR_STEPS) -> Tuple[np.ndarray, List[float]]:
-    # TODO 3:
-    # 1. Initialise w as a zero vector of length X.shape[1].
-    # 2. For the requested number of steps, compute the gradient and update w.
-    # 3. After each update, append the current train MSE to history.
-    # 4. Return the final weights and the history list.
-    raise NotImplementedError("Complete plaintext_train")
+    w = np.zeros(X.shape[1], dtype=float)
+    history: List[float] = []
+    for _ in range(steps):
+        grad = plaintext_gradient(X, y, w)
+        w = w - learning_rate * grad
+        history.append(mse(X, y, w))
+    return w, history
 
 
 def local_gradient(X_local: np.ndarray, y_local: np.ndarray, w: np.ndarray) -> Tuple[np.ndarray, int]:
-    # TODO 4:
-    # 1. Compute the local residuals for this hospital only.
-    # 2. Compute the local gradient SUM, not yet divided by the total number of records.
-    # 3. Return the local gradient sum together with the local record count.
-    raise NotImplementedError("Complete local_gradient")
+    residual = X_local @ w - y_local
+    grad_sum = X_local.T @ residual
+    return grad_sum, X_local.shape[0]
 
 
 def plaintext_distributed_gradient(
@@ -217,15 +212,20 @@ def plaintext_distributed_train(
     learning_rate: float = LEARNING_RATE,
     steps: int = LINEAR_STEPS,
 ) -> Tuple[np.ndarray, List[float]]:
-    # TODO 5:
-    # 1. Initialise w as zeros.
-    # 2. In each step, compute the distributed plaintext gradient using Hospital A and Hospital B.
-    # 3. Update w and record the combined train MSE on all training rows.
-    # 4. Return the final weights and the history list.
-    raise NotImplementedError("Complete plaintext_distributed_train")
+    w = np.zeros(X_a.shape[1], dtype=float)
+    history: List[float] = []
+    X_total = np.vstack([X_a, X_b])
+    y_total = np.concatenate([y_a, y_b])
+    for _ in range(steps):
+        grad = plaintext_distributed_gradient(X_a, y_a, X_b, y_b, w)
+        w = w - learning_rate * grad
+        history.append(mse(X_total, y_total, w))
+    return w, history
 
 
-
+# ---------------------------------------------------------------------------
+# Field arithmetic helpers
+# ---------------------------------------------------------------------------
 
 def mod_reduce(value):
     arr = np.asarray(value, dtype=object)
@@ -248,44 +248,64 @@ def to_signed(z):
     return signed.astype(np.int64)
 
 
+# ---------------------------------------------------------------------------
+# Fixed-point encode / decode  (TODO 6, 7)
+# ---------------------------------------------------------------------------
+
 def encode_real(x):
-    # TODO 6:
-    # Multiply by SCALE, round to the nearest integer, cast to int64, and reduce modulo MODULUS.
-    # Preserve scalar output when x is a scalar.
-    raise NotImplementedError("Complete encode_real")
+    scalar = np.isscalar(x)
+    arr = np.asarray(x, dtype=float)
+    encoded = np.rint(arr * SCALE).astype(np.int64)
+    result = mod_reduce(encoded)
+    if scalar:
+        return int(result)
+    return result
 
 
 def decode_fp(z):
-    # TODO 7:
-    # Convert the field element back to a signed integer and divide by SCALE.
-    raise NotImplementedError("Complete decode_fp")
+    return to_signed(z) / SCALE
 
+
+# ---------------------------------------------------------------------------
+# Additive secret sharing  (TODO 8, 9)
+# ---------------------------------------------------------------------------
 
 def share_secret(secret, rng: np.random.Generator):
-    # TODO 8:
-    # 1. Convert secret to an int64 NumPy array modulo MODULUS.
-    # 2. Sample a random share s0 of the same shape.
-    # 3. Compute s1 = secret - s0 mod MODULUS.
-    # 4. Return s0, s1.
-    raise NotImplementedError("Complete share_secret")
+    arr = np.asarray(secret, dtype=object)
+    secret_mod = np.asarray(np.mod(arr, MODULUS), dtype=np.int64)
+    shape = secret_mod.shape if secret_mod.ndim > 0 else None
+    s0 = rng.integers(0, MODULUS, size=shape, dtype=np.int64)
+    s0_arr = np.asarray(s0, dtype=np.int64)
+    s1 = np.asarray(
+        np.mod(np.asarray(secret_mod, dtype=object) - np.asarray(s0_arr, dtype=object), MODULUS),
+        dtype=np.int64,
+    )
+    return s0_arr, s1
 
 
 def reconstruct(shares):
-    # TODO 9:
-    # Return (share0 + share1) mod MODULUS.
-    raise NotImplementedError("Complete reconstruct")
+    s0, s1 = shares
+    return mod_reduce(np.asarray(s0, dtype=object) + np.asarray(s1, dtype=object))
 
+
+# ---------------------------------------------------------------------------
+# Share arithmetic  (TODO 10, 11)
+# ---------------------------------------------------------------------------
 
 def add_shares(a, b):
-    # TODO 10:
-    # Add the server-0 shares together and the server-1 shares together, each modulo MODULUS.
-    raise NotImplementedError("Complete add_shares")
+    a0, a1 = a
+    b0, b1 = b
+    r0 = mod_reduce(np.asarray(a0, dtype=object) + np.asarray(b0, dtype=object))
+    r1 = mod_reduce(np.asarray(a1, dtype=object) + np.asarray(b1, dtype=object))
+    return r0, r1
 
 
 def sub_shares(a, b):
-    # TODO 11:
-    # Subtract the server-0 shares and the server-1 shares separately modulo MODULUS.
-    raise NotImplementedError("Complete sub_shares")
+    a0, a1 = a
+    b0, b1 = b
+    r0 = mod_reduce(np.asarray(a0, dtype=object) - np.asarray(b0, dtype=object))
+    r1 = mod_reduce(np.asarray(a1, dtype=object) - np.asarray(b1, dtype=object))
+    return r0, r1
 
 
 def share_zero_like(reference):
@@ -299,44 +319,82 @@ def truncate_scaled_product_shares(product_shares, rng: np.random.Generator):
     return share_secret(truncated, rng)
 
 
-def mul_public_encoded(a, public_encoded: int, rng: np.random.Generator):
-    # TODO 12:
-    # 1. Multiply each share by the encoded public constant modulo MODULUS.
-    # 2. Because the product has scale SCALE^2, call the truncation helper before returning.
-    raise NotImplementedError("Complete mul_public_encoded")
+# ---------------------------------------------------------------------------
+# Multiplication by a public encoded constant  (TODO 12)
+# ---------------------------------------------------------------------------
 
+def mul_public_encoded(a, public_encoded: int, rng: np.random.Generator):
+    a0, a1 = a
+    p = int(public_encoded)
+    r0 = mod_reduce(np.asarray(a0, dtype=object) * p)
+    r1 = mod_reduce(np.asarray(a1, dtype=object) * p)
+    return truncate_scaled_product_shares((r0, r1), rng)
+
+
+# ---------------------------------------------------------------------------
+# Beaver triple + secure multiplication  (TODO 13)
+# ---------------------------------------------------------------------------
 
 def make_triple(shape, rng: np.random.Generator):
     a_plain = rng.integers(0, MODULUS, size=shape if shape else None, dtype=np.int64)
     b_plain = rng.integers(0, MODULUS, size=shape if shape else None, dtype=np.int64)
-    c_plain = (a_plain * b_plain) % MODULUS
+    c_plain = mod_reduce(np.asarray(a_plain, dtype=object) * np.asarray(b_plain, dtype=object))
     return share_secret(a_plain, rng), share_secret(b_plain, rng), share_secret(c_plain, rng)
 
 
 def beaver_mul(x_shares, y_shares, triple, rng: np.random.Generator):
-    # TODO 13:
-    # Implement Beaver-style secure multiplication.
-    # Suggested steps:
-    # 1. Unpack triple into shares of a, b, c where c = a*b.
-    # 2. Compute d = x-a and e = y-b in shared form.
-    # 3. Open d and e.
-    # 4. Form the product shares using c + d*b + e*a + d*e on server 0 and c + d*b + e*a on server 1.
-    # 5. Truncate the SCALE^2 product back to SCALE using the helper.
-    raise NotImplementedError("Complete beaver_mul")
+    a_shares, b_shares, c_shares = triple
 
+    d_shares = sub_shares(x_shares, a_shares)
+    e_shares = sub_shares(y_shares, b_shares)
+
+    d = to_signed(reconstruct(d_shares))
+    e = to_signed(reconstruct(e_shares))
+
+    a0, a1 = a_shares
+    b0, b1 = b_shares
+    c0, c1 = c_shares
+
+    d_obj = np.asarray(d, dtype=object)
+    e_obj = np.asarray(e, dtype=object)
+
+    # Server 0 holds: c0 + d*b0 + e*a0 + d*e  (d*e is public, added once)
+    p0 = mod_reduce(
+        np.asarray(c0, dtype=object)
+        + d_obj * np.asarray(b0, dtype=object)
+        + e_obj * np.asarray(a0, dtype=object)
+        + d_obj * e_obj
+    )
+    # Server 1 holds: c1 + d*b1 + e*a1
+    p1 = mod_reduce(
+        np.asarray(c1, dtype=object)
+        + d_obj * np.asarray(b1, dtype=object)
+        + e_obj * np.asarray(a1, dtype=object)
+    )
+
+    return truncate_scaled_product_shares((p0, p1), rng)
+
+
+# ---------------------------------------------------------------------------
+# Secure dot product  (TODO 14)
+# ---------------------------------------------------------------------------
 
 def secure_dot(x_row_shared, w_shared, rng: np.random.Generator):
-    # TODO 14:
-    # 1. Initialise a shared zero accumulator.
-    # 2. For each coordinate, multiply x_j and w_j securely with Beaver multiplication.
-    # 3. Add each term into the accumulator.
-    # 4. Return the shared dot-product result.
-    raise NotImplementedError("Complete secure_dot")
+    acc = share_zero_like(0)
+    for x_j, w_j in zip(x_row_shared, w_shared):
+        triple = make_triple((), rng)
+        prod = beaver_mul(x_j, w_j, triple, rng)
+        acc = add_shares(acc, prod)
+    return acc
 
 
 def encode_vector_as_shared(vec: np.ndarray, rng: np.random.Generator):
     return [share_secret(v, rng) for v in encode_real(vec)]
 
+
+# ---------------------------------------------------------------------------
+# One secret-shared gradient descent step  (TODO 15)
+# ---------------------------------------------------------------------------
 
 def secure_gradient_step(
     X_plain: np.ndarray,
@@ -345,16 +403,35 @@ def secure_gradient_step(
     learning_rate: float,
     rng: np.random.Generator,
 ):
-    # TODO 15:
-    # Implement one secret-shared gradient descent update.
-    # Your implementation should:
-    # 1. Encode X and y into fixed-point integers.
-    # 2. For each row, secret-share the features and target.
-    # 3. Securely compute the prediction and residual.
-    # 4. Accumulate the secure gradient contributions for every weight.
-    # 5. Multiply by 2/n and then by the learning rate using public encoded constants.
-    # 6. Update the shared weights and return the new weights plus the reconstructed gradient.
-    raise NotImplementedError("Complete secure_gradient_step")
+    n, d = X_plain.shape
+    X_enc = encode_real(X_plain)   # shape (n, d), int64 field elements
+    y_enc = encode_real(y_plain)   # shape (n,),   int64 field elements
+
+    grad_sums = [share_zero_like(0) for _ in range(d)]
+
+    for i in range(n):
+        x_i_shared = [share_secret(X_enc[i, j], rng) for j in range(d)]
+        y_i_shared = share_secret(y_enc[i], rng)
+
+        pred_shared = secure_dot(x_i_shared, w_shared, rng)
+        resid_shared = sub_shares(pred_shared, y_i_shared)
+
+        for j in range(d):
+            triple = make_triple((), rng)
+            contrib = beaver_mul(x_i_shared[j], resid_shared, triple, rng)
+            grad_sums[j] = add_shares(grad_sums[j], contrib)
+
+    # Multiply accumulated gradient by (2/n * learning_rate) as a public constant
+    scale_factor = encode_real(2.0 / n * learning_rate)
+
+    new_w_shared = []
+    grad_reconstructed = []
+    for j in range(d):
+        grad_j = mul_public_encoded(grad_sums[j], scale_factor, rng)
+        grad_reconstructed.append(float(decode_fp(reconstruct(grad_j))))
+        new_w_shared.append(sub_shares(w_shared[j], grad_j))
+
+    return new_w_shared, np.array(grad_reconstructed, dtype=float)
 
 
 def mpc_train_linear(
@@ -384,10 +461,12 @@ def mpc_train_linear(
         SCALE = old_scale
 
 
+# ---------------------------------------------------------------------------
+# Logistic inference  (TODO 16, 17)
+# ---------------------------------------------------------------------------
+
 def exact_logistic_probs(X_query: np.ndarray, public_weights: np.ndarray) -> np.ndarray:
-    # TODO 16:
-    # Compute the exact plaintext logistic probabilities using sigmoid(X_query @ public_weights).
-    raise NotImplementedError("Complete exact_logistic_probs")
+    return sigmoid(X_query @ public_weights)
 
 
 def cubic_sigmoid_approx(z):
@@ -396,18 +475,37 @@ def cubic_sigmoid_approx(z):
 
 
 def secure_approx_logistic_probs(X_query: np.ndarray, public_weights: np.ndarray, group_ids: Sequence[str]):
-    # TODO 17:
-    # Implement the secure approximate logistic inference workflow.
-    # For each query row:
-    # 1. Secret-share the encoded query features.
-    # 2. Secret-share the public weight vector (for simplicity in this teaching scaffold).
-    # 3. Securely compute z = x dot w.
-    # 4. Securely compute z^3 using Beaver multiplication.
-    # 5. Reconstruct z and z^3, then evaluate the cubic approximation
-    #    0.5 + 0.2166*z - 0.0066*z^3, clipped to [0, 1].
-    # 6. Return all approximate probabilities as a NumPy array.
-    raise NotImplementedError("Complete secure_approx_logistic_probs")
+    rng = np.random.default_rng(seed_from_group_ids(group_ids) + 9999)
+    d = X_query.shape[1]
+    probs = []
 
+    for i in range(len(X_query)):
+        x_enc = encode_real(X_query[i])
+        x_shared = [share_secret(x_enc[j], rng) for j in range(d)]
+
+        w_enc = encode_real(public_weights)
+        w_shared = [share_secret(w_enc[j], rng) for j in range(d)]
+
+        z_shared = secure_dot(x_shared, w_shared, rng)
+
+        triple1 = make_triple((), rng)
+        z2_shared = beaver_mul(z_shared, z_shared, triple1, rng)
+
+        triple2 = make_triple((), rng)
+        z3_shared = beaver_mul(z2_shared, z_shared, triple2, rng)
+
+        z_val = float(decode_fp(reconstruct(z_shared)))
+        z3_val = float(decode_fp(reconstruct(z3_shared)))
+
+        prob = float(np.clip(0.5 + 0.2166 * z_val - 0.0066 * z3_val, 0.0, 1.0))
+        probs.append(prob)
+
+    return np.array(probs, dtype=float)
+
+
+# ---------------------------------------------------------------------------
+# Reporting helpers
+# ---------------------------------------------------------------------------
 
 def plot_histories(
     history_central: Sequence[float],
@@ -480,7 +578,6 @@ def main():
     gradB_sum0, nB0 = local_gradient(X_b, y_b, zero_w)
     grad0_distributed = (gradA_sum0 + gradB_sum0) / (nA0 + nB0)
 
-
     w_plain, hist_plain = plaintext_train(X_train, y_train)
     w_dist, hist_dist = plaintext_distributed_train(X_a, y_a, X_b, y_b)
     w_mpc, hist_mpc = mpc_train_linear(X_train, y_train)
@@ -509,12 +606,10 @@ def main():
     print(f"Distributed train MSE: {dist_train_mse:.6f} | test MSE: {dist_test_mse:.6f}")
     print(f"MPC train MSE: {mpc_train_mse:.6f} | test MSE: {mpc_test_mse:.6f}")
 
-    # sensitivity study on scale
     w_mpc_low_scale, _ = mpc_train_linear(X_train, y_train, scale=50, seed_offset=4321)
     low_scale_test_mse = mse(X_test, y_test, w_mpc_low_scale)
     print(f"MPC test MSE with lower fixed-point scale 50: {low_scale_test_mse:.6f}")
 
-    # logistic inference
     X_query = test_df.head(8)[["x_age", "x_marker", "x_admissions", "x_treatment"]].to_numpy(dtype=float)
     X_query = np.hstack([np.ones((len(X_query), 1), dtype=float), X_query])
     y_query = test_df.head(8)["needs_followup"].to_numpy(dtype=int)
@@ -547,3 +642,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
