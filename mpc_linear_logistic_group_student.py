@@ -201,7 +201,7 @@ def plaintext_distributed_gradient(
 ) -> np.ndarray:
     grad_a_sum, n_a = local_gradient(X_a, y_a, w)
     grad_b_sum, n_b = local_gradient(X_b, y_b, w)
-    return (grad_a_sum + grad_b_sum) / (n_a + n_b)
+    return (2.0 / (n_a + n_b)) * (grad_a_sum + grad_b_sum)
 
 
 def plaintext_distributed_train(
@@ -576,7 +576,7 @@ def main():
     grad0_central = plaintext_gradient(X_train, y_train, zero_w)
     gradA_sum0, nA0 = local_gradient(X_a, y_a, zero_w)
     gradB_sum0, nB0 = local_gradient(X_b, y_b, zero_w)
-    grad0_distributed = (gradA_sum0 + gradB_sum0) / (nA0 + nB0)
+    grad0_distributed = (2.0 / (nA0 + nB0)) * (gradA_sum0 + gradB_sum0)
 
     w_plain, hist_plain = plaintext_train(X_train, y_train)
     w_dist, hist_dist = plaintext_distributed_train(X_a, y_a, X_b, y_b)
